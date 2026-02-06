@@ -658,7 +658,20 @@ async function runOCR() {
     textEl.textContent = 'Initializing Tesseract.js OCR engine...';
     progressEl.style.width = '10%';
 
+    // Fetch worker script and create same-origin blob to bypass cross-origin worker restriction
+    textEl.textContent = 'Loading OCR engine...';
+    progressEl.style.width = '5%';
+
+    const workerScript = await fetch('https://cdn.jsdelivr.net/npm/tesseract.js@v5.1.1/dist/worker.min.js').then(r => r.text());
+    const workerBlob = new Blob([workerScript], { type: 'application/javascript' });
+    const workerBlobUrl = URL.createObjectURL(workerBlob);
+
+    progressEl.style.width = '10%';
+    textEl.textContent = 'Initializing OCR...';
+
     const worker = await Tesseract.createWorker('eng', 1, {
+      workerPath: workerBlobUrl,
+      workerBlobURL: false,
       logger: m => {
         if (m.status === 'recognizing text') {
           const pct = Math.round(m.progress * 100);
@@ -670,6 +683,7 @@ async function runOCR() {
 
     const { data } = await worker.recognize(capturedImage);
     await worker.terminate();
+    URL.revokeObjectURL(workerBlobUrl);
 
     progressEl.style.width = '95%';
     textEl.textContent = 'Parsing table structure...';
