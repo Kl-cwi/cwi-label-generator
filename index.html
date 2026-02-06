@@ -342,11 +342,8 @@
             <tr>
               <th style="width:40px">✕</th>
               <th>Label</th>
-              <th style="width:60px">Qty</th>
-              <th>Function</th>
-              <th>Member Type</th>
-              <th>Length</th>
-              <th>Prefab Length</th>
+              <th style="width:70px">Count</th>
+              <th>Custom (optional)</th>
               <th style="width:70px"></th>
             </tr>
           </thead>
@@ -724,45 +721,33 @@ function extractPanelId(text) {
 }
 
 function parseOCRText(text) {
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 3);
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
   const rows = [];
-  const memberPattern = /\d{3}[A-Z]?[A-Z]*\d*-\d+/;
+  const seen = new Set();
 
   for (const line of lines) {
+    // Skip header/title lines
     if (/LABEL|QTY|FUNCTION|MEMBER|LENGTH|PREFAB|Grand total|FRAMING CUT|^\s*P\d{3,5}/i.test(line)) continue;
 
-    const tokens = line.split(/\s{2,}|\t+/);
-    if (tokens.length < 3) continue;
+    // Look for patterns like: C0  5  or T1  1  (label + number, possibly with other columns after)
+    const tokens = line.split(/\s{2,}|\t+/).map(t => t.trim()).filter(t => t);
+    if (tokens.length < 2) continue;
 
-    const memberIdx = tokens.findIndex(t => memberPattern.test(t));
-    if (memberIdx === -1) {
-      if (/^[A-Z]{1,2}\d+$/i.test(tokens[0])) {
-        rows.push({
-          label: tokens[0], qty: parseInt(tokens[1]) || 1, func: tokens[2] || '',
-          memberType: tokens[3] || '', length: tokens[4] || '', prefabLength: tokens[5] || '',
-          excluded: false, id: genId()
-        });
-      }
-      continue;
-    }
+    // First token should be a label like C0, C1, T0, T1, AC etc.
+    const labelToken = tokens[0];
+    if (!/^[A-Z]{1,3}\d{0,3}$/i.test(labelToken)) continue;
 
-    let label = '', qty = 1, func = '';
-    for (let i = 0; i < memberIdx; i++) {
-      const t = tokens[i];
-      if (/^[A-Z]{1,2}\d+$/i.test(t) && !label) label = t;
-      else if (/^\d+$/.test(t)) qty = parseInt(t);
-      else if (t.length >= 2) func = t;
-    }
+    // Second token should be a number (qty)
+    const qtyToken = tokens[1];
+    const qty = parseInt(qtyToken);
+    if (isNaN(qty) || qty < 1) continue;
 
-    const memberType = tokens[memberIdx];
-    const remaining = tokens.slice(memberIdx + 1).join(' ');
-    const lengthParts = remaining.split(/\s{3,}/);
-    let length = lengthParts[0]?.trim() || '';
-    let prefabLength = lengthParts[1]?.trim() || '';
+    // Avoid duplicates from OCR noise
+    const key = labelToken.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
 
-    if (label) {
-      rows.push({ label, qty, func, memberType, length, prefabLength, excluded: false, id: genId() });
-    }
+    rows.push({ label: labelToken.toUpperCase(), qty, custom: '', excluded: false, id: genId() });
   }
   return rows;
 }
@@ -775,7 +760,7 @@ function skipOCR() {
 
 // ══════════════════ TABLE ══════════════════
 function emptyRow() {
-  return { label: '', qty: 1, func: '', memberType: '', length: '', prefabLength: '', excluded: false, id: genId() };
+  return { label: '', qty: 1, custom: '', excluded: false, id: genId() };
 }
 
 function genId() { return 'r' + Math.random().toString(36).substr(2, 8); }
@@ -794,10 +779,7 @@ function renderTable() {
       </td>
       <td><input type="text" value="${esc(row.label)}" onchange="updateCell(${idx},'label',this.value)" placeholder="C0"></td>
       <td><input type="number" class="qty-input" value="${row.qty}" min="1" onchange="updateCell(${idx},'qty',parseInt(this.value)||1)"></td>
-      <td><input type="text" value="${esc(row.func)}" onchange="updateCell(${idx},'func',this.value)" placeholder="SW"></td>
-      <td><input type="text" value="${esc(row.memberType)}" onchange="updateCell(${idx},'memberType',this.value)" placeholder="600S162-33"></td>
-      <td><input type="text" value="${esc(row.length)}" onchange="updateCell(${idx},'length',this.value)" placeholder="13' - 6 5/8&quot;"></td>
-      <td><input type="text" value="${esc(row.prefabLength)}" onchange="updateCell(${idx},'prefabLength',this.value)" placeholder="optional"></td>
+      <td><input type="text" value="${esc(row.custom || '')}" onchange="updateCell(${idx},'custom',this.value)" placeholder="leave blank if not needed"></td>
       <td><div class="row-actions"><button class="icon-btn del" title="Delete row" onclick="deleteRow(${idx})">✕</button></div></td>
     `;
     tbody.appendChild(tr);
@@ -874,7 +856,7 @@ async function buildPDF() {
   const labels = [];
   cutListData.filter(r => !r.excluded).forEach(r => {
     for (let i = 0; i < (r.qty || 1); i++) {
-      labels.push({ label: r.label, memberType: r.memberType, length: r.length });
+      labels.push({ label: r.label, custom: r.custom || '' });
     }
   });
 
@@ -897,7 +879,7 @@ async function buildPDF() {
   const qrContainer = document.getElementById('qr-scratch');
   const qrDataUrls = [];
   for (const lbl of labels) {
-    const qrData = `${panelId}|${lbl.label}|${lbl.memberType}|${lbl.length}`;
+    const qrData = `${panelId}|${lbl.label}`;
     qrContainer.innerHTML = '';
     const qrDiv = document.createElement('div');
     qrContainer.appendChild(qrDiv);
@@ -937,11 +919,18 @@ async function buildPDF() {
       // Panel ID (large, center)
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(Math.min(26, cellW * 6));
-      pdf.text(panelId, x + cellW * 0.5, y + cellH * 0.3, { align: 'center' });
+      pdf.text(panelId, x + cellW * 0.5, y + cellH * 0.28, { align: 'center' });
 
       // Label code (large, center, below panel ID)
       pdf.setFontSize(Math.min(24, cellW * 5.5));
-      pdf.text(lbl.label, x + cellW * 0.5, y + cellH * 0.55, { align: 'center' });
+      pdf.text(lbl.label, x + cellW * 0.5, y + cellH * 0.5, { align: 'center' });
+
+      // Custom text (if any, smaller, below label)
+      if (lbl.custom) {
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(Math.min(10, cellW * 2.5));
+        pdf.text(lbl.custom, x + cellW * 0.5, y + cellH * 0.65, { align: 'center' });
+      }
 
       // Project name (bottom-left, small caps)
       pdf.setFont('helvetica', 'normal');
