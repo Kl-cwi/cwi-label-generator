@@ -6,7 +6,8 @@
 <title>CFS Label Generator — Component West Inc.</title>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<!-- Local, quota-free OCR fallback (runs fully in-browser) -->
+<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
@@ -386,41 +387,9 @@
               <img class="ref-image" id="previewImg" src="" alt="cut list reference">
               <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
                 <button class="btn btn-primary btn-sm" id="autoReadBtn" onclick="autoRead()">🔍 Auto-Read</button>
+                <button class="btn btn-secondary btn-sm" id="localReadBtn" onclick="localRead()">🧠 Local OCR</button>
                 <button class="btn btn-danger btn-sm" onclick="clearImage()">✕ Remove</button>
               </div>
-              
-              <!-- Scan printed label sheet (QR) -->
-              <div class="ocr-bar" style="display:block;margin-top:10px;">
-                <div class="ocr-bar-text" style="color:var(--blue);">Scan printed label sheet (QR)</div>
-                <div class="form-row" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin:8px 0 10px;">
-                  <div class="form-group" style="gap:4px;">
-                    <label style="font-size:11px;">Columns</label>
-                    <select id="scanCols" style="padding:6px 10px;font-size:12px;">
-                      <option value="2" selected>2</option>
-                      <option value="3">3</option>
-                    </select>
-                  </div>
-                  <div class="form-group" style="gap:4px;">
-                    <label style="font-size:11px;">Rows</label>
-                    <select id="scanRows" style="padding:6px 10px;font-size:12px;">
-                      <option value="4">4</option>
-                      <option value="5" selected>5</option>
-                      <option value="6">6</option>
-                    </select>
-                  </div>
-                  <div class="form-group" style="gap:4px;">
-                    <label style="font-size:11px;">Page margin (%)</label>
-                    <input id="scanMarginPct" type="number" min="0" max="15" value="4"
-                      style="padding:6px 10px;font-size:12px;font-family:var(--mono);">
-                  </div>
-                </div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                  <button class="btn btn-secondary btn-sm" id="scanSheetBtn" onclick="scanLabelSheet()">🏷 Scan Labels (QR)</button>
-                  <button class="btn btn-secondary btn-sm" onclick="applyScanToLayoutDefaults()" style="opacity:0.8;">↺ Use current layout</button>
-                </div>
-                <div id="scanResult" class="parse-result" style="margin-top:10px;"></div>
-              </div>
-
               <div id="apiKeySection" style="margin-top:8px;">
                 <div id="apiKeyStatus" class="api-key-status"></div>
                 <div id="apiKeyForm" style="display:none;">
@@ -1088,170 +1057,189 @@ Return ONLY valid JSON — no markdown, no backticks, no commentary:
   btn.textContent = '🔍 Auto-Read';
 }
 
+// ══════════════════ LOCAL OCR (Tesseract.js — runs fully in-browser) ══════════════════
+let _tessWorkerPromise = null;
 
-// ══════════════════ LABEL SHEET SCAN (QR) ══════════════════
-async function ensureJsQR() {
-  if (window.jsQR) return;
-  const urls = [
-    'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
-    'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js'
-  ];
-  for (const url of urls) {
-    try {
-      await loadScript(url);
-      if (window.jsQR) return;
-    } catch(e) { /* try next */ }
-  }
-  throw new Error('Could not load jsQR library. Check your internet connection.');
+async function getTessWorker(loggerFn) {
+  if (_tessWorkerPromise) return _tessWorkerPromise;
+  if (!window.Tesseract) throw new Error('Local OCR failed to load (Tesseract.js missing)');
+
+  _tessWorkerPromise = (async () => {
+    const worker = await Tesseract.createWorker({ logger: loggerFn || (() => {}) });
+    await worker.loadLanguage('eng');
+    await worker.initialize('eng');
+    return worker;
+  })();
+
+  return _tessWorkerPromise;
 }
 
-function applyScanToLayoutDefaults() {
-  // Sync scan grid with current label layout (Step 4 controls)
-  const colEl = document.getElementById('colCount');
-  const rowEl = document.getElementById('rowCount');
-  const scanCols = document.getElementById('scanCols');
-  const scanRows = document.getElementById('scanRows');
-  if (colEl && scanCols) scanCols.value = String(parseInt(colEl.value) || 2);
-  if (rowEl && scanRows) scanRows.value = String(parseInt(rowEl.value) || 5);
-  toast('Scan grid set to current layout');
+function otsuThreshold(hist, total) {
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+
+  let sumB = 0;
+  let wB = 0;
+  let varMax = -1;
+  let threshold = 128;
+
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const diff = mB - mF;
+    const varBetween = wB * wF * diff * diff;
+    if (varBetween > varMax) {
+      varMax = varBetween;
+      threshold = t;
+    }
+  }
+  return threshold;
 }
 
-function parseQrPayload(payload) {
-  // Expected: "P2000|C0" (generated by this app)【panelId|label】.
-  const s = (payload || '').trim();
-  if (!s) return null;
-  const parts = s.split('|').map(p => p.trim()).filter(Boolean);
-  if (parts.length >= 2 && /^P\d{3,5}$/i.test(parts[0])) {
-    return { panelId: parts[0].toUpperCase(), label: parts[1].toUpperCase() };
-  }
-  // Fallback: sometimes scanners may return just the label
-  if (/^[A-Z]{1,3}\d{0,3}$/i.test(s)) return { panelId: '', label: s.toUpperCase() };
-  return null;
+async function dataUrlToImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
 }
 
-async function scanLabelSheet() {
-  const resultEl = document.getElementById('scanResult');
-  if (resultEl) { resultEl.className = 'parse-result'; resultEl.innerHTML = ''; }
+function preprocessForLocalOCR(img, { scale = 2, contrast = 1.3 } = {}) {
+  // Scale up to give OCR more pixels.
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-  if (!capturedImage) {
-    if (resultEl) { resultEl.className = 'parse-result error'; resultEl.innerHTML = '⚠ Paste or upload a screenshot of the printed label page first.'; }
-    return;
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imageData.data;
+  const n = canvas.width * canvas.height;
+  const grays = new Uint8Array(n);
+  const hist = new Uint32Array(256);
+
+  // 1) Remove red markups and compute grayscale + histogram.
+  for (let p = 0, i = 0; p < n; p++, i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    const isRed = (r > 150 && g < 120 && b < 120 && r > g + 40 && r > b + 40);
+    if (isRed) {
+      grays[p] = 255;
+      hist[255]++;
+      continue;
+    }
+    let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+    gray = (gray - 128) * contrast + 128;
+    if (gray < 0) gray = 0;
+    if (gray > 255) gray = 255;
+    const g8 = gray | 0;
+    grays[p] = g8;
+    hist[g8]++;
   }
 
-  const scanBtn = document.getElementById('scanSheetBtn');
-  if (scanBtn) { scanBtn.disabled = true; scanBtn.textContent = '⏳ Scanning...'; }
+  // 2) Otsu binarize.
+  const thr = otsuThreshold(hist, n);
+  for (let p = 0, i = 0; p < n; p++, i += 4) {
+    const v = grays[p] < thr ? 0 : 255; // black text on white
+    d[i] = d[i + 1] = d[i + 2] = v;
+    d[i + 3] = 255;
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function normalizeOcrText(text) {
+  // Fix common OCR confusions for label tokens: O→0, I/l→1 at end of token.
+  let t = text || '';
+  t = t.replace(/\b([A-Z]{1,3})O\b/g, '$10');
+  t = t.replace(/\b([A-Z]{1,3})[Il]\b/g, '$11');
+  // Normalize weird whitespace.
+  t = t.replace(/\u00A0/g, ' ');
+  t = t.replace(/[\t\r]+/g, ' ');
+  t = t.replace(/\n{3,}/g, '\n\n');
+  return t;
+}
+
+async function localRead() {
+  if (!capturedImage) { toast('Paste an image first'); return; }
+
+  const btnGem = document.getElementById('autoReadBtn');
+  const btnLoc = document.getElementById('localReadBtn');
+  const bar = document.getElementById('ocrBar');
+  const barText = document.getElementById('ocrBarText');
+  const barFill = document.getElementById('ocrBarFill');
+  const rawToggle = document.getElementById('ocrRawToggle');
+  const rawEl = document.getElementById('ocrRawText');
+
+  btnGem.disabled = true;
+  btnLoc.disabled = true;
+  btnLoc.textContent = '⏳ Local OCR...';
+  bar.style.display = 'block';
+  barFill.style.width = '10%';
+  barText.textContent = 'Preparing image for local OCR...';
+  if (rawToggle) rawToggle.style.display = 'none';
 
   try {
-    await ensureJsQR();
+    const img = await dataUrlToImage(capturedImage);
+    const canvas = preprocessForLocalOCR(img, { scale: 2, contrast: 1.35 });
+    barFill.style.width = '35%';
+    barText.textContent = 'Loading local OCR engine (first run can be slow)...';
 
-    const cols = parseInt(document.getElementById('scanCols')?.value || '2', 10);
-    const rows = parseInt(document.getElementById('scanRows')?.value || '5', 10);
-    const marginPct = Math.max(0, Math.min(15, parseFloat(document.getElementById('scanMarginPct')?.value || '4'))) / 100;
-
-    const img = new Image();
-    img.src = capturedImage;
-    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
-
-    // Draw full image once
-    const canvas = document.createElement('canvas');
-    const w = img.naturalWidth || img.width;
-    const h = img.naturalHeight || img.height;
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0);
-
-    const usableW = w * (1 - marginPct * 2);
-    const usableH = h * (1 - marginPct * 2);
-    const x0 = w * marginPct;
-    const y0 = h * marginPct;
-    const cellW = usableW / cols;
-    const cellH = usableH / rows;
-
-    const counts = new Map();
-    let detectedPanel = '';
-    let decoded = 0;
-
-    // Offscreen for scaling QR crops up (jsQR benefits from >~150px)
-    const cropCanvas = document.createElement('canvas');
-    const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const cellX = x0 + c * cellW;
-        const cellY = y0 + r * cellH;
-
-        // QR position matches PDF generation: top-left; size is min(cellH*0.42, cellW*0.22)【same ratios】.
-        const qrSize = Math.min(cellH * 0.42, cellW * 0.22);
-        const qrX = cellX + cellW * 0.04;
-        const qrY = cellY + cellH * 0.05;
-
-        // Add a bit of padding and clamp
-        const pad = Math.max(2, qrSize * 0.08);
-        const sx = Math.max(0, Math.floor(qrX - pad));
-        const sy = Math.max(0, Math.floor(qrY - pad));
-        const sw = Math.min(w - sx, Math.floor(qrSize + pad * 2));
-        const sh = Math.min(h - sy, Math.floor(qrSize + pad * 2));
-        if (sw <= 0 || sh <= 0) continue;
-
-        // Scale crop up for better decode
-        const scale = 3;
-        cropCanvas.width = sw * scale;
-        cropCanvas.height = sh * scale;
-        cropCtx.imageSmoothingEnabled = false;
-        cropCtx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
-        cropCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, cropCanvas.width, cropCanvas.height);
-
-        const imgData = cropCtx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
-        const qr = window.jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
-        if (!qr?.data) continue;
-
-        const parsed = parseQrPayload(qr.data);
-        if (!parsed?.label) continue;
-
-        decoded++;
-        if (parsed.panelId && !detectedPanel) detectedPanel = parsed.panelId;
-
-        counts.set(parsed.label, (counts.get(parsed.label) || 0) + 1);
+    const worker = await getTessWorker((m) => {
+      // Map progress to bar (best-effort).
+      if (m && m.progress != null) {
+        const pct = 35 + Math.round(m.progress * 50);
+        barFill.style.width = Math.min(90, Math.max(35, pct)) + '%';
       }
+    });
+
+    // OCR settings: tuned for dense tables.
+    const psm = (window.Tesseract && Tesseract.PSM && Tesseract.PSM.SPARSE_TEXT) ? Tesseract.PSM.SPARSE_TEXT : 11;
+    if (worker.setParameters) {
+      await worker.setParameters({
+        tessedit_pageseg_mode: psm,
+        preserve_interword_spaces: '1',
+        user_defined_dpi: '300'
+      });
     }
 
-    if (decoded === 0 || counts.size === 0) {
-      if (resultEl) {
-        resultEl.className = 'parse-result error';
-        resultEl.innerHTML = '⚠ No QR codes decoded. Tips: use a full-page screenshot (not a photo), ensure correct Columns/Rows, and try a slightly larger Page margin.';
-      }
-      return;
+    barText.textContent = 'Running local OCR...';
+    barFill.style.width = '55%';
+
+    const res = await worker.recognize(canvas);
+    const ocrText = normalizeOcrText(res?.data?.text || '');
+
+    // Show OCR text in the Paste tab (so user can inspect / edit).
+    switchTab('paste');
+    const ta = document.getElementById('textPasteArea');
+    ta.value = ocrText;
+    parseTextPaste();
+
+    barFill.style.width = '100%';
+    barText.textContent = '✓ Local OCR complete — parsed from extracted text';
+
+    // Optional: allow user to inspect raw OCR.
+    if (rawToggle && rawEl) {
+      rawToggle.style.display = 'block';
+      rawEl.textContent = `[Local OCR]\n\n${ocrText}`;
     }
-
-    // Auto-fill Panel ID if empty
-    const pidInput = document.getElementById('panelId');
-    if (pidInput && detectedPanel && !pidInput.value.trim()) pidInput.value = detectedPanel;
-
-    // Populate spreadsheet grid with counted labels
-    const gridData = Array.from(counts.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([label, qty]) => ({ label, qty, custom: '' }));
-    while (gridData.length < Math.max(gridData.length + 3, 10)) gridData.push({ label: '', qty: 1, custom: '' });
-    ssInit(gridData);
-
-    const totalLabels = Array.from(counts.values()).reduce((s, n) => s + n, 0);
-    if (resultEl) {
-      resultEl.className = 'parse-result success';
-      resultEl.innerHTML =
-        `✅ Decoded <strong>${decoded}</strong> stickers (${totalLabels} counted) • <strong>${counts.size}</strong> unique labels` +
-        (detectedPanel ? ` • Panel: <strong>${detectedPanel}</strong>` : '') +
-        `<br><span style="font-size:11px;opacity:0.7;">Counts were loaded into the grid on the right.</span>`;
-    }
-    toast(`Scanned ${decoded} labels from sheet`);
   } catch (err) {
-    if (resultEl) { resultEl.className = 'parse-result error'; resultEl.innerHTML = '⚠ ' + (err?.message || String(err)); }
-    console.error('Label sheet scan error:', err);
-  } finally {
-    if (scanBtn) { scanBtn.disabled = false; scanBtn.textContent = '🏷 Scan Labels (QR)'; }
+    barFill.style.width = '100%';
+    barText.textContent = '⚠ Local OCR failed: ' + (err?.message || String(err));
+    console.error('Local OCR error:', err);
   }
-}
 
+  btnGem.disabled = false;
+  btnLoc.disabled = false;
+  btnLoc.textContent = '🧠 Local OCR';
+}
 
 // ══════════════════ SPREADSHEET GRID ══════════════════
 let ssData = []; // [{label, qty, custom}]
