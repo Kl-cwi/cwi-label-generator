@@ -7,7 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <!-- Local, quota-free OCR fallback (runs fully in-browser) -->
-<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
@@ -1064,11 +1064,37 @@ async function getTessWorker(loggerFn) {
   if (_tessWorkerPromise) return _tessWorkerPromise;
   if (!window.Tesseract) throw new Error('Local OCR failed to load (Tesseract.js missing)');
 
-  _tessWorkerPromise = (async () => {
-    const worker = await Tesseract.createWorker({ logger: loggerFn || (() => {}) });
+  // IMPORTANT: When using script tags / GitHub Pages, you must explicitly set
+  // workerPath/corePath/langPath or the worker/lang downloads will often 404/hang.
+  // (Symptoms: UI appears stuck on "Loading local OCR engine...")
+  const TESS_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist';
+  const TESS_CORE_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5';
+  const LANG_PRIMARY = 'https://tessdata.projectnaptha.com/4.0.0';
+  const LANG_FALLBACK = 'https://raw.githubusercontent.com/naptha/tessdata/gh-pages/4.0.0';
+
+  async function makeWorker(langPath) {
+    const worker = await Tesseract.createWorker({
+      logger: loggerFn || (() => {}),
+      workerPath: `${TESS_CDN}/worker.min.js`,
+      corePath: TESS_CORE_CDN,
+      langPath,
+      // Avoid stale/broken caches during dev.
+      cacheMethod: 'none'
+    });
+    // Some builds require explicit load(). Safe to call if present.
+    if (worker.load) await worker.load();
     await worker.loadLanguage('eng');
     await worker.initialize('eng');
     return worker;
+  }
+
+  _tessWorkerPromise = (async () => {
+    try {
+      return await makeWorker(LANG_PRIMARY);
+    } catch (e1) {
+      console.warn('[Local OCR] Primary langPath failed, trying fallback:', e1);
+      return await makeWorker(LANG_FALLBACK);
+    }
   })();
 
   return _tessWorkerPromise;
