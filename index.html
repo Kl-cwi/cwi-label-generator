@@ -6,6 +6,7 @@
 <title>CFS Label Generator — Component West Inc.</title>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
@@ -110,21 +111,72 @@
   .preview-wrap img { width: 100%; display: block; max-height: 350px; object-fit: contain; background: #000; }
   .preview-toolbar { display: flex; gap: 8px; padding: 10px; background: var(--surface2); justify-content: flex-end; }
 
-  /* ── QUICK ENTRY ── */
+  /* ── SPREADSHEET GRID ── */
   .quick-entry-wrap { display: flex; gap: 16px; flex-wrap: wrap; }
   .quick-entry-wrap .ref-panel { flex: 1; min-width: 280px; }
-  .quick-entry-wrap .entry-panel { flex: 1; min-width: 280px; }
+  .quick-entry-wrap .entry-panel { flex: 1; min-width: 300px; }
   .ref-image { width: 100%; border-radius: 7px; border: 1px solid var(--border); max-height: 350px; object-fit: contain; background: #000; display: block; }
-  .quick-input { font-family: var(--mono); font-size: 15px; width: 100%; padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--accent); min-height: 80px; resize: vertical; outline: none; line-height: 1.8; }
-  .quick-input:focus { border-color: var(--accent); }
-  .quick-input::placeholder { color: var(--text-dim); font-size: 13px; }
-  .quick-hint { font-size: 11px; color: var(--text-dim); margin-top: 8px; line-height: 1.6; }
-  .quick-hint code { background: var(--surface2); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
-  .quick-preview { margin-top: 12px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 12px; }
-  .quick-preview .qp-row { display: flex; gap: 12px; padding: 3px 0; font-family: var(--mono); }
-  .quick-preview .qp-label { color: var(--accent); font-weight: 700; min-width: 40px; }
-  .quick-preview .qp-count { color: var(--text-dim); }
-  .quick-preview .qp-total { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); font-weight: 700; color: var(--success); }
+
+  .ss-wrap { position: relative; border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 400px; background: var(--bg); }
+  .ss-table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: var(--mono); table-layout: fixed; }
+  .ss-table thead { position: sticky; top: 0; z-index: 2; }
+  .ss-table th {
+    background: var(--surface2); padding: 6px 8px; text-align: left; font-weight: 700;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim);
+    border-bottom: 2px solid var(--border); border-right: 1px solid var(--border);
+    font-family: var(--font); user-select: none;
+  }
+  .ss-table th:last-child { border-right: none; }
+  .ss-row-header {
+    background: var(--surface2) !important; color: var(--text-dim); text-align: center;
+    font-size: 10px; font-weight: 600; cursor: pointer; user-select: none;
+    border-right: 2px solid var(--border) !important; width: 28px; min-width: 28px;
+  }
+  .ss-table td {
+    padding: 0; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
+    position: relative; height: 30px;
+  }
+  .ss-table td:last-child { border-right: none; }
+  .ss-table td.ss-rh { /* row header cell */
+    background: var(--surface2); text-align: center; font-size: 10px; color: var(--text-dim);
+    font-weight: 600; cursor: pointer; user-select: none; padding: 0 4px;
+    border-right: 2px solid var(--border);
+  }
+  .ss-table tr.ss-selected td.ss-rh { background: var(--accent); color: #000; }
+  .ss-table tr.ss-selected td { background: var(--accent-dim); }
+
+  .ss-cell-input {
+    width: 100%; height: 100%; padding: 4px 8px; border: none; outline: none;
+    background: transparent; color: var(--text); font-family: var(--mono); font-size: 13px;
+    box-sizing: border-box;
+  }
+  .ss-cell-input:focus { background: rgba(245,158,11,0.08); }
+  .ss-cell-input.count-cell { text-align: center; }
+  .ss-cell-input::placeholder { color: var(--text-dim); opacity: 0.4; font-size: 11px; }
+
+  /* Active cell highlight */
+  td.ss-active { outline: 2px solid var(--accent); outline-offset: -1px; z-index: 1; }
+
+  /* Fill handle */
+  .ss-fill-handle {
+    position: absolute; width: 8px; height: 8px; background: var(--accent);
+    border: 1px solid var(--bg); cursor: crosshair; z-index: 5;
+    display: none; pointer-events: auto;
+  }
+  .ss-fill-range td { background: rgba(59,130,246,0.15) !important; }
+
+  .ss-footer {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; font-size: 11px; color: var(--text-dim);
+  }
+  .ss-footer #ssStatus { font-weight: 700; color: var(--accent); }
+  .ss-hint { opacity: 0.6; }
+
+  /* ── OCR BAR ── */
+  .ocr-bar { margin-top: 10px; padding: 10px 12px; background: var(--surface2); border-radius: 7px; border: 1px solid var(--border); }
+  .ocr-bar-text { font-size: 12px; font-weight: 600; color: var(--blue); margin-bottom: 6px; }
+  .ocr-bar-track { height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+  .ocr-bar-fill { height: 100%; background: var(--blue); border-radius: 3px; transition: width 0.3s; width: 0%; }
 
   /* ── DATA TABLE ── */
   .data-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
@@ -183,7 +235,7 @@
     <img class="logo-mark" id="headerLogo" src="" alt="CW">
     <div>
       <h1>CFS Label Generator</h1>
-      <p>Snip → Type Labels → Print PDF</p>
+      <p>Snip → Auto-Read or Type → Print Labels</p>
     </div>
     <div class="header-right">
       <div class="company">Component West Inc.</div>
@@ -229,7 +281,7 @@
         <span style="font-size:24px;">ℹ️</span>
         <div>
           <div style="font-size:13px;font-weight:600;color:var(--accent);margin-bottom:2px;">Quick workflow</div>
-          <div style="font-size:12px;color:var(--text-dim);">Next step: paste a snip of your cut list as reference, type the Panel ID and labels, then generate your PDF.</div>
+          <div style="font-size:12px;color:var(--text-dim);">Next step: paste a snip of your cut list → click <b>Auto-Read</b> to extract via OCR, or type directly in the Excel-like grid.</div>
         </div>
       </div>
     </div>
@@ -242,7 +294,7 @@
   <!-- ═══════ STEP 2: CAPTURE & ENTER ═══════ -->
   <div class="panel" id="panel-2">
     <div class="panel-title">Capture & Enter Labels</div>
-    <div class="panel-desc">Snip your cut list with <strong style="color:var(--accent)">ShareX</strong> or <strong style="color:var(--accent)">Win+Shift+S</strong>, paste it here as reference, then type the labels.</div>
+    <div class="panel-desc">Snip your cut list, paste it, then <strong style="color:var(--accent)">Auto-Read</strong> or type in the grid. Drag the fill handle ■ to copy/increment cells like Excel.</div>
 
     <div class="quick-entry-wrap">
       <!-- LEFT: Image reference -->
@@ -266,14 +318,20 @@
 
           <div id="previewWrap" style="display:none;">
             <img class="ref-image" id="previewImg" src="" alt="cut list reference">
-            <div style="text-align:right;margin-top:8px;">
+            <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+              <button class="btn btn-primary btn-sm" id="autoReadBtn" onclick="autoRead()">🔍 Auto-Read (OCR)</button>
               <button class="btn btn-danger btn-sm" onclick="clearImage()">✕ Remove</button>
+            </div>
+            <!-- OCR status bar -->
+            <div class="ocr-bar" id="ocrBar" style="display:none;">
+              <div class="ocr-bar-text" id="ocrBarText">Reading...</div>
+              <div class="ocr-bar-track"><div class="ocr-bar-fill" id="ocrBarFill"></div></div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- RIGHT: Quick data entry -->
+      <!-- RIGHT: Spreadsheet entry -->
       <div class="entry-panel">
         <div class="card">
           <div class="card-label">Panel ID</div>
@@ -282,22 +340,39 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-label">Quick Entry — Type labels from cut list</div>
-          <textarea class="quick-input" id="quickInput" placeholder="C0:5&#10;T0:1&#10;T1:1&#10;T2:1&#10;T3:1" oninput="parseQuickEntry()"></textarea>
-          <div class="quick-hint">
-            Type one per line: <code>Label:Count</code><br>
-            Examples: <code>C0:5</code> &nbsp; <code>T0:1</code> &nbsp; <code>T1:1</code><br>
-            Just type the label if count is 1: <code>T3</code> = <code>T3:1</code>
+        <div class="card" style="padding:12px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div class="card-label" style="margin:0;">Labels</div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-secondary btn-sm" onclick="ssAddRow()" title="Add row">+ Row</button>
+              <button class="btn btn-danger btn-sm" onclick="ssDeleteSelected()" title="Delete selected rows">✕ Del</button>
+            </div>
           </div>
-          <div class="quick-preview" id="quickPreview"></div>
+          <div class="ss-wrap" id="ssWrap">
+            <table class="ss-table" id="ssTable">
+              <thead>
+                <tr>
+                  <th class="ss-row-header" style="width:28px;">#</th>
+                  <th style="min-width:70px;">Label</th>
+                  <th style="width:60px;">Count</th>
+                  <th style="min-width:90px;">Custom</th>
+                </tr>
+              </thead>
+              <tbody id="ssBody"></tbody>
+            </table>
+            <div class="ss-fill-handle" id="ssFillHandle"></div>
+          </div>
+          <div class="ss-footer">
+            <span id="ssStatus">0 labels</span>
+            <span class="ss-hint">Tab/Enter/Arrows to navigate • Drag handle to fill down</span>
+          </div>
         </div>
       </div>
     </div>
 
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="goStep(1)">← Back</button>
-      <button class="btn btn-primary" id="goReviewBtn" onclick="applyQuickEntry()">Continue → Review</button>
+      <button class="btn btn-primary" id="goReviewBtn" onclick="applySpreadsheet()">Continue → Review</button>
     </div>
   </div>
 
@@ -457,6 +532,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('headerLogo').src = LOGO_BASE64;
   loadProjects();
   renderProjectDropdown();
+  ssInitFillHandle();
 });
 
 // ══════════════════ NAVIGATION ══════════════════
@@ -464,6 +540,9 @@ function goStep(n) {
   if (n === 2 && !document.getElementById('projectSelect').value) {
     toast('Please select a project first');
     return;
+  }
+  if (n === 2 && ssData.length === 0) {
+    ssInit(null); // Start with empty grid
   }
   if (n === 3) renderTable();
   if (n === 4) {
@@ -508,6 +587,7 @@ function clearImage() {
   document.getElementById('previewWrap').style.display = 'none';
   document.getElementById('captureZone').style.display = '';
   document.getElementById('imageFile').value = '';
+  document.getElementById('ocrBar').style.display = 'none';
 }
 
 // ── Paste listener (global — works anywhere on the page) ──
@@ -548,42 +628,364 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ══════════════════ QUICK ENTRY ══════════════════
-function parseQuickEntry() {
-  const raw = document.getElementById('quickInput').value;
-  const preview = document.getElementById('quickPreview');
-  const lines = raw.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  const parsed = [];
+// ══════════════════ AUTO-READ (OCR) ══════════════════
+async function autoRead() {
+  if (!capturedImage) { toast('Paste an image first'); return; }
 
-  for (const line of lines) {
-    // Accept formats: "C0:5", "C0 5", "C0, 5", "C0" (defaults to 1)
-    const match = line.match(/^([A-Za-z]{1,3}\d{0,3})\s*[:\s,]\s*(\d+)$/);
-    if (match) {
-      parsed.push({ label: match[1].toUpperCase(), qty: parseInt(match[2]) });
+  const btn = document.getElementById('autoReadBtn');
+  const bar = document.getElementById('ocrBar');
+  const barText = document.getElementById('ocrBarText');
+  const barFill = document.getElementById('ocrBarFill');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Reading...';
+  bar.style.display = 'block';
+  barText.textContent = 'Loading OCR engine...';
+  barFill.style.width = '5%';
+
+  try {
+    // Load Tesseract if not loaded
+    if (typeof Tesseract === 'undefined') {
+      await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');
+    }
+
+    barText.textContent = 'Initializing worker...';
+    barFill.style.width = '10%';
+
+    const worker = await Tesseract.createWorker('eng', 1, {
+      logger: m => {
+        if (m.status === 'recognizing text') {
+          const pct = Math.round(m.progress * 100);
+          barFill.style.width = (10 + pct * 0.85) + '%';
+          barText.textContent = `Reading text... ${pct}%`;
+        }
+      }
+    });
+
+    const { data } = await worker.recognize(capturedImage);
+    await worker.terminate();
+
+    barFill.style.width = '98%';
+    barText.textContent = 'Parsing results...';
+
+    // Extract Panel ID
+    const panelIdMatch = data.text.match(/\b(P\d{3,5})\b/i);
+    if (panelIdMatch) {
+      document.getElementById('panelId').value = panelIdMatch[1].toUpperCase();
+    }
+
+    // Parse table rows into Label:Count format
+    const lines = data.text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
+    const entries = [];
+    const seen = new Set();
+
+    for (const line of lines) {
+      // Skip headers, titles, totals
+      if (/LABEL|QTY|FUNCTION|MEMBER|LENGTH|PREFAB|Grand total|FRAMING CUT|^\s*P\d{3,5}/i.test(line)) continue;
+
+      const tokens = line.split(/\s{2,}|\t+/).map(t => t.trim()).filter(t => t);
+      if (tokens.length < 2) continue;
+
+      // First token = label (1-3 letters + 0-3 digits), second = qty
+      const labelToken = tokens[0];
+      if (!/^[A-Z]{1,3}\d{0,3}$/i.test(labelToken)) continue;
+
+      const qty = parseInt(tokens[1]);
+      if (isNaN(qty) || qty < 1) continue;
+
+      const key = labelToken.toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      entries.push(`${key}:${qty}`);
+    }
+
+    // Populate the spreadsheet grid
+    if (entries.length > 0) {
+      const ocrData = entries.map(e => {
+        const parts = e.split(':');
+        return { label: parts[0], qty: parseInt(parts[1]) || 1, custom: '' };
+      });
+      // Add a few empty rows for editing
+      while (ocrData.length < 10) ocrData.push({ label: '', qty: 1, custom: '' });
+      ssInit(ocrData);
+      barFill.style.width = '100%';
+      barText.textContent = `✓ Found ${entries.length} labels` + (panelIdMatch ? ` — Panel: ${panelIdMatch[1].toUpperCase()}` : '');
+      toast(`Auto-read: ${entries.length} labels extracted`);
     } else {
-      // Just a label with no count → count = 1
-      const labelOnly = line.match(/^([A-Za-z]{1,3}\d{0,3})$/);
-      if (labelOnly) {
-        parsed.push({ label: labelOnly[1].toUpperCase(), qty: 1 });
+      barText.textContent = '⚠ No labels detected — type them in the grid';
+      barFill.style.width = '100%';
+    }
+
+  } catch (err) {
+    barText.textContent = '⚠ OCR failed: ' + err.message + ' — type labels manually';
+    barFill.style.width = '0%';
+    console.error('OCR error:', err);
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🔍 Auto-Read (OCR)';
+}
+
+// ══════════════════ SPREADSHEET GRID ══════════════════
+let ssData = []; // [{label, qty, custom}]
+let ssActiveCell = null; // {row, col}
+let ssSelectedRows = new Set();
+let ssFilling = false;
+let ssFillStart = null;
+let ssFillEnd = null;
+
+const SS_COLS = ['label', 'qty', 'custom'];
+
+function ssInit(data) {
+  ssData = data && data.length > 0
+    ? data.map(d => ({ label: d.label || '', qty: d.qty || 1, custom: d.custom || '' }))
+    : Array.from({length: 8}, () => ({ label: '', qty: 1, custom: '' }));
+  ssActiveCell = null;
+  ssSelectedRows.clear();
+  ssRender();
+}
+
+function ssRender() {
+  const tbody = document.getElementById('ssBody');
+  tbody.innerHTML = '';
+  ssData.forEach((row, ri) => {
+    const tr = document.createElement('tr');
+    tr.dataset.row = ri;
+
+    // Row header
+    const rh = document.createElement('td');
+    rh.className = 'ss-rh';
+    rh.textContent = ri + 1;
+    rh.onclick = () => ssToggleRowSelect(ri);
+    tr.appendChild(rh);
+
+    // Data cells
+    SS_COLS.forEach((col, ci) => {
+      const td = document.createElement('td');
+      td.dataset.row = ri;
+      td.dataset.col = ci;
+
+      const inp = document.createElement('input');
+      inp.className = 'ss-cell-input' + (ci === 1 ? ' count-cell' : '');
+      inp.type = ci === 1 ? 'number' : 'text';
+      if (ci === 1) { inp.min = 1; inp.value = row.qty || 1; }
+      else { inp.value = row[col] || ''; }
+      if (ci === 0) inp.placeholder = ri === 0 ? 'C0' : '';
+      if (ci === 2) inp.placeholder = 'optional';
+
+      inp.onfocus = () => ssSetActive(ri, ci);
+      inp.oninput = () => {
+        ssData[ri][col] = ci === 1 ? (parseInt(inp.value) || 1) : inp.value;
+        ssUpdateStatus();
+        // Auto-uppercase labels
+        if (ci === 0) { const pos = inp.selectionStart; inp.value = inp.value.toUpperCase(); inp.setSelectionRange(pos, pos); ssData[ri].label = inp.value; }
+      };
+      inp.onkeydown = (e) => ssKeyNav(e, ri, ci);
+
+      td.appendChild(inp);
+      tr.appendChild(td);
+    });
+
+    if (ssSelectedRows.has(ri)) tr.classList.add('ss-selected');
+    tbody.appendChild(tr);
+  });
+  ssUpdateStatus();
+  ssPositionFillHandle();
+}
+
+function ssSetActive(row, col) {
+  // Clear previous
+  document.querySelectorAll('td.ss-active').forEach(td => td.classList.remove('ss-active'));
+  ssActiveCell = { row, col };
+  const td = ssGetTd(row, col);
+  if (td) td.classList.add('ss-active');
+  ssPositionFillHandle();
+}
+
+function ssGetTd(row, col) {
+  return document.querySelector(`#ssBody td[data-row="${row}"][data-col="${col}"]`);
+}
+
+function ssGetInput(row, col) {
+  const td = ssGetTd(row, col);
+  return td ? td.querySelector('input') : null;
+}
+
+function ssFocusCell(row, col) {
+  const inp = ssGetInput(row, col);
+  if (inp) { inp.focus(); ssSetActive(row, col); }
+}
+
+// ── Keyboard Navigation ──
+function ssKeyNav(e, row, col) {
+  const maxRow = ssData.length - 1;
+  const maxCol = SS_COLS.length - 1;
+
+  // Tab → next cell, Shift+Tab → previous
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    if (e.shiftKey) {
+      if (col > 0) ssFocusCell(row, col - 1);
+      else if (row > 0) ssFocusCell(row - 1, maxCol);
+    } else {
+      if (col < maxCol) ssFocusCell(row, col + 1);
+      else if (row < maxRow) ssFocusCell(row + 1, 0);
+      else { ssAddRow(); setTimeout(() => ssFocusCell(row + 1, 0), 30); }
+    }
+    return;
+  }
+
+  // Enter → next row same col (add row if at bottom)
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (row < maxRow) ssFocusCell(row + 1, col);
+    else { ssAddRow(); setTimeout(() => ssFocusCell(row + 1, col), 30); }
+    return;
+  }
+
+  // Arrow keys (only when not mid-edit on text, or when at edges)
+  if (e.key === 'ArrowDown') { e.preventDefault(); if (row < maxRow) ssFocusCell(row + 1, col); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); if (row > 0) ssFocusCell(row - 1, col); }
+  if (e.key === 'ArrowRight' && e.altKey) { e.preventDefault(); if (col < maxCol) ssFocusCell(row, col + 1); }
+  if (e.key === 'ArrowLeft' && e.altKey) { e.preventDefault(); if (col > 0) ssFocusCell(row, col - 1); }
+
+  // Ctrl+D → Fill down (copy from cell above)
+  if (e.key === 'd' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    if (row > 0) {
+      const aboveVal = ssData[row - 1][SS_COLS[col]];
+      ssData[row][SS_COLS[col]] = aboveVal;
+      const inp = ssGetInput(row, col);
+      if (inp) inp.value = aboveVal;
+      ssUpdateStatus();
+    }
+    return;
+  }
+
+  // Delete/Backspace on row header selection
+  if ((e.key === 'Delete' || e.key === 'Backspace') && ssSelectedRows.size > 0 && document.activeElement.closest('td.ss-rh')) {
+    e.preventDefault();
+    ssDeleteSelected();
+  }
+}
+
+// ── Row Selection ──
+function ssToggleRowSelect(ri) {
+  if (ssSelectedRows.has(ri)) ssSelectedRows.delete(ri);
+  else ssSelectedRows.add(ri);
+  ssRender();
+}
+
+function ssAddRow() {
+  ssData.push({ label: '', qty: 1, custom: '' });
+  ssRender();
+}
+
+function ssDeleteSelected() {
+  if (ssSelectedRows.size === 0) {
+    // Delete last row if nothing selected
+    if (ssData.length > 1) { ssData.pop(); ssRender(); }
+    return;
+  }
+  ssData = ssData.filter((_, i) => !ssSelectedRows.has(i));
+  if (ssData.length === 0) ssData.push({ label: '', qty: 1, custom: '' });
+  ssSelectedRows.clear();
+  ssRender();
+}
+
+// ── Fill Handle ──
+function ssPositionFillHandle() {
+  const handle = document.getElementById('ssFillHandle');
+  if (!ssActiveCell) { handle.style.display = 'none'; return; }
+  const td = ssGetTd(ssActiveCell.row, ssActiveCell.col);
+  if (!td) { handle.style.display = 'none'; return; }
+  const wrap = document.getElementById('ssWrap');
+  const wr = wrap.getBoundingClientRect();
+  const tr = td.getBoundingClientRect();
+  handle.style.display = 'block';
+  handle.style.left = (tr.right - wr.left - 5 + wrap.scrollLeft) + 'px';
+  handle.style.top = (tr.bottom - wr.top - 5 + wrap.scrollTop) + 'px';
+}
+
+// Fill handle drag — initialized after DOM ready
+function ssInitFillHandle() {
+  const handle = document.getElementById('ssFillHandle');
+  if (!handle) return;
+
+  // Reposition fill handle on scroll
+  const wrap = document.getElementById('ssWrap');
+  if (wrap) wrap.addEventListener('scroll', () => ssPositionFillHandle());
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    if (!ssActiveCell) return;
+    ssFilling = true;
+    ssFillStart = { ...ssActiveCell };
+    ssFillEnd = { ...ssActiveCell };
+    document.addEventListener('mousemove', onFillMove);
+    document.addEventListener('mouseup', onFillUp);
+  });
+
+  function onFillMove(e) {
+    if (!ssFilling) return;
+    const rows = document.querySelectorAll('#ssBody tr');
+    for (let i = 0; i < rows.length; i++) {
+      const rect = rows[i].getBoundingClientRect();
+      if (e.clientY >= rect.top && e.clientY <= rect.bottom) {
+        ssFillEnd = { row: i, col: ssFillStart.col };
+        rows.forEach(r => r.classList.remove('ss-fill-range'));
+        const start = Math.min(ssFillStart.row, i);
+        const end = Math.max(ssFillStart.row, i);
+        for (let j = start; j <= end; j++) rows[j]?.classList.add('ss-fill-range');
+        break;
       }
     }
   }
 
-  // Render preview
-  if (parsed.length === 0) {
-    preview.innerHTML = '<span style="color:var(--text-dim);">Type labels above to see preview</span>';
-    return;
-  }
+  function onFillUp() {
+    document.removeEventListener('mousemove', onFillMove);
+    document.removeEventListener('mouseup', onFillUp);
+    document.querySelectorAll('#ssBody tr').forEach(r => r.classList.remove('ss-fill-range'));
+    if (!ssFilling || !ssFillStart || !ssFillEnd) { ssFilling = false; return; }
 
-  const totalLabels = parsed.reduce((s, r) => s + r.qty, 0);
-  let html = parsed.map(r =>
-    `<div class="qp-row"><span class="qp-label">${r.label}</span><span class="qp-count">× ${r.qty}</span></div>`
-  ).join('');
-  html += `<div class="qp-total">🏷️ ${totalLabels} labels total</div>`;
-  preview.innerHTML = html;
+    const col = SS_COLS[ssFillStart.col];
+    const srcVal = ssData[ssFillStart.row][col];
+    const startR = Math.min(ssFillStart.row, ssFillEnd.row);
+    const endR = Math.max(ssFillStart.row, ssFillEnd.row);
+
+    if (startR === endR) { ssFilling = false; return; }
+
+    // Auto-increment detection for labels (C0→C1→C2)
+    const incrMatch = String(srcVal).match(/^([A-Za-z]+)(\d+)$/);
+
+    for (let r = startR; r <= endR; r++) {
+      if (r === ssFillStart.row) continue;
+      if (incrMatch && col === 'label') {
+        const prefix = incrMatch[1];
+        const baseNum = parseInt(incrMatch[2]);
+        const offset = r - ssFillStart.row;
+        ssData[r][col] = prefix.toUpperCase() + (baseNum + offset);
+      } else {
+        ssData[r][col] = srcVal;
+      }
+    }
+
+    ssFilling = false;
+    ssRender();
+    ssFocusCell(endR, ssFillStart.col);
+  }
 }
 
-function applyQuickEntry() {
+function ssUpdateStatus() {
+  const filled = ssData.filter(r => r.label.trim() !== '');
+  const total = filled.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+  const el = document.getElementById('ssStatus');
+  if (el) el.textContent = filled.length > 0 ? `${filled.length} rows • ${total} labels` : '0 labels';
+}
+
+// ── Apply spreadsheet data to cutListData and go to step 3 ──
+function applySpreadsheet() {
   const panelId = document.getElementById('panelId').value.trim();
   if (!panelId) {
     toast('Please enter a Panel ID');
@@ -591,24 +993,20 @@ function applyQuickEntry() {
     return;
   }
 
-  const raw = document.getElementById('quickInput').value;
-  const lines = raw.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  cutListData = [];
-
-  for (const line of lines) {
-    const match = line.match(/^([A-Za-z]{1,3}\d{0,3})\s*[:\s,]\s*(\d+)$/);
-    if (match) {
-      cutListData.push({ label: match[1].toUpperCase(), qty: parseInt(match[2]), custom: '', excluded: false, id: genId() });
-    } else {
-      const labelOnly = line.match(/^([A-Za-z]{1,3}\d{0,3})$/);
-      if (labelOnly) {
-        cutListData.push({ label: labelOnly[1].toUpperCase(), qty: 1, custom: '', excluded: false, id: genId() });
-      }
-    }
-  }
+  // Only take rows that have a label
+  cutListData = ssData
+    .filter(r => r.label.trim() !== '')
+    .map(r => ({
+      label: r.label.toUpperCase().trim(),
+      qty: Math.max(1, parseInt(r.qty) || 1),
+      custom: r.custom || '',
+      excluded: false,
+      id: genId()
+    }));
 
   if (cutListData.length === 0) {
-    cutListData.push(emptyRow());
+    toast('Enter at least one label');
+    return;
   }
 
   // Set reference image in step 3 if available
@@ -885,10 +1283,10 @@ function printPDF() {
 
 function resetAll() {
   cutListData = [];
+  ssData = [];
   pdfBlob = null;
   document.getElementById('panelId').value = '';
-  document.getElementById('quickInput').value = '';
-  document.getElementById('quickPreview').innerHTML = '';
+  document.getElementById('ocrBar').style.display = 'none';
   document.getElementById('pdfDoneCard').style.display = 'none';
   document.getElementById('genControls').style.display = '';
   clearImage();
