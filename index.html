@@ -367,7 +367,7 @@
         <!-- TAB 2: AI Read (image) -->
         <div class="tab-content visible" id="tab-ai">
           <div class="card">
-            <div class="card-label" style="margin-bottom:8px;">Screenshot your cut list → AI reads it instantly. Free — 250 reads/day, no credit card.</div>
+            <div class="card-label" style="margin-bottom:8px;">Screenshot your cut list → AI reads it instantly. Powered by Google Gemini.</div>
 
             <div id="captureZone">
               <div class="paste-zone" id="pasteZone" tabindex="0">
@@ -535,6 +535,12 @@
 <div id="qr-scratch"></div>
 
 <script>
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  GEMINI API KEY — paste your free key here before deploying    ║
+// ║  Get one at: https://aistudio.google.com/apikey               ║
+// ╚══════════════════════════════════════════════════════════════════╝
+const GEMINI_API_KEY = 'AIzaSyAnAbV3gEEzhe2IhvS40mVFzLHODEEBwm8'; // ← paste your key here, e.g. 'AIzaSy...'
+
 // ══════════════════ LIBRARY LOADER ══════════════════
 function loadScript(url) {
   return new Promise((resolve, reject) => {
@@ -813,7 +819,7 @@ function parseTextPaste() {
 }
 
 // ══════════════════ API KEY MANAGEMENT ══════════════════
-function getApiKey() { return localStorage.getItem('cwi_gemini_key') || ''; }
+function getApiKey() { return GEMINI_API_KEY || localStorage.getItem('cwi_gemini_key') || ''; }
 function saveApiKey() {
   const key = document.getElementById('apiKeyInput').value.trim();
   if (!key || key.length < 10) { toast('Invalid key — get a free key from aistudio.google.com/apikey'); return; }
@@ -825,7 +831,16 @@ function saveApiKey() {
 function updateApiKeyStatus() {
   const el = document.getElementById('apiKeyStatus');
   if (!el) return;
-  const key = getApiKey();
+  // If baked-in key exists, hide the entire key section
+  if (GEMINI_API_KEY) {
+    el.className = 'api-key-status connected';
+    el.innerHTML = '🟢 AI Reader ready';
+    el.onclick = null;
+    const form = document.getElementById('apiKeyForm');
+    if (form) form.style.display = 'none';
+    return;
+  }
+  const key = localStorage.getItem('cwi_gemini_key') || '';
   if (key) {
     el.className = 'api-key-status connected';
     el.innerHTML = '🟢 AI Reader connected — free tier <span style="opacity:0.5;font-size:10px;">(click to change key)</span>';
@@ -846,7 +861,7 @@ async function autoRead() {
   const apiKey = getApiKey();
   if (!apiKey) {
     document.getElementById('apiKeyForm').style.display = 'block';
-    toast('Get a free Gemini API key — no credit card required');
+    toast('API key not configured — enter a Gemini key or contact your admin');
     document.getElementById('apiKeyInput').focus();
     return;
   }
