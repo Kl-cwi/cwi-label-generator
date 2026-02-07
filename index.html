@@ -675,29 +675,46 @@ async function autoRead() {
     }
 
     // Parse table rows into Label:Count format
-    const lines = data.text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
+    // Use direct regex to find "Label  Number" patterns regardless of column spacing
+    const rawText = data.text;
+    const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 1);
     const entries = [];
     const seen = new Set();
+
+    console.log('[OCR] Raw text:\n' + rawText); // Debug
 
     for (const line of lines) {
       // Skip headers, titles, totals
       if (/LABEL|QTY|FUNCTION|MEMBER|LENGTH|PREFAB|Grand total|FRAMING CUT|^\s*P\d{3,5}/i.test(line)) continue;
 
-      const tokens = line.split(/\s{2,}|\t+/).map(t => t.trim()).filter(t => t);
-      if (tokens.length < 2) continue;
+      // Strategy 1: Direct regex — find label + qty at start of line
+      // Matches: "C0 12 ...", "T1   1  TTOP...", "AC  4  2x2..."
+      const directMatch = line.match(/^\s*([A-Z]{1,3}\d{0,3})\s+(\d+)\s/i);
+      if (directMatch) {
+        const label = directMatch[1].toUpperCase();
+        const qty = parseInt(directMatch[2]);
+        if (qty >= 1 && !seen.has(label)) {
+          seen.add(label);
+          entries.push(`${label}:${qty}`);
+          continue;
+        }
+      }
 
-      // First token = label (1-3 letters + 0-3 digits), second = qty
-      const labelToken = tokens[0];
-      if (!/^[A-Z]{1,3}\d{0,3}$/i.test(labelToken)) continue;
-
-      const qty = parseInt(tokens[1]);
-      if (isNaN(qty) || qty < 1) continue;
-
-      const key = labelToken.toUpperCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      entries.push(`${key}:${qty}`);
+      // Strategy 2: Split on any whitespace and take first two tokens
+      const tokens = line.split(/\s+/).filter(t => t);
+      if (tokens.length >= 2) {
+        const labelToken = tokens[0];
+        if (/^[A-Z]{1,3}\d{0,3}$/i.test(labelToken)) {
+          const qty = parseInt(tokens[1]);
+          if (!isNaN(qty) && qty >= 1) {
+            const key = labelToken.toUpperCase();
+            if (!seen.has(key)) {
+              seen.add(key);
+              entries.push(`${key}:${qty}`);
+            }
+          }
+        }
+      }
     }
 
     // Populate the spreadsheet grid
@@ -711,10 +728,14 @@ async function autoRead() {
       ssInit(ocrData);
       barFill.style.width = '100%';
       barText.textContent = `✓ Found ${entries.length} labels` + (panelIdMatch ? ` — Panel: ${panelIdMatch[1].toUpperCase()}` : '');
+      barText.innerHTML += '<br><span style="font-size:10px;opacity:0.6;cursor:pointer;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">▸ show raw OCR text</span><pre style="display:none;font-size:10px;max-height:120px;overflow:auto;white-space:pre-wrap;background:var(--bg);padding:6px;border-radius:4px;margin-top:4px;">' + rawText.replace(/</g,'&lt;') + '</pre>';
       toast(`Auto-read: ${entries.length} labels extracted`);
     } else {
-      barText.textContent = '⚠ No labels detected — type them in the grid';
       barFill.style.width = '100%';
+      barText.innerHTML = '⚠ No labels detected — type them in the grid';
+      if (rawText.trim()) {
+        barText.innerHTML += '<br><span style="font-size:10px;color:var(--accent);cursor:pointer;" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">▸ show raw OCR text (debug)</span><pre style="display:none;font-size:10px;max-height:150px;overflow:auto;white-space:pre-wrap;background:var(--bg);padding:6px;border-radius:4px;margin-top:4px;color:var(--text);">' + rawText.replace(/</g,'&lt;') + '</pre>';
+      }
     }
 
   } catch (err) {
